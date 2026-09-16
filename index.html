@@ -414,6 +414,11 @@
       .retouch[open] summary { margin-bottom: 18px; }
       .retouch-controls { display: grid; gap: 16px; }
 
+      .print-field {
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+
       .status {
         min-height: 42px;
         margin-top: auto;
@@ -464,7 +469,9 @@
       }
 
       .download { background: var(--ink); color: #fff; font-weight: 700; letter-spacing: .08em; }
+      .layout-download { grid-column: 1 / -1; background: var(--blue); }
       .download:hover:not(:disabled) { background: var(--blue); transform: translateY(-1px); }
+      .layout-download:hover:not(:disabled) { background: var(--ink); }
       .download:disabled { cursor: not-allowed; opacity: .35; }
       .reset { padding: 0 15px; background: transparent; color: var(--muted); }
       .reset:hover { background: var(--paper-deep); color: var(--ink); }
@@ -592,6 +599,16 @@
                 </div>
               </div>
             </details>
+
+            <div class="field print-field">
+              <div class="field-head"><label for="paperSelect">照片纸排版</label><output class="field-output" id="layoutOutput">10 张 · 1800 × 1200 px</output></div>
+              <select id="paperSelect">
+                <option value="1800,1200">6寸横版 · 152 × 102 mm</option>
+                <option value="1500,1050">5寸横版 · 127 × 89 mm</option>
+                <option value="2100,1500">7寸横版 · 178 × 127 mm</option>
+                <option value="2480,3508">A4竖版 · 210 × 297 mm</option>
+              </select>
+            </div>
           </div>
 
           <div class="status" id="status" role="status" aria-live="polite">
@@ -600,6 +617,7 @@
           </div>
 
           <div class="actions">
+            <button class="download layout-download" id="layoutDownloadButton" disabled>下载排版照 · 10 张</button>
             <button class="download" id="downloadButton" disabled>下载证件照 · JPG</button>
             <button class="reset" id="resetButton" type="button">重置</button>
           </div>
@@ -617,6 +635,7 @@
       const dropZone = $("#dropZone");
       const uploadLabel = $("#uploadLabel");
       const sizeSelect = $("#sizeSelect");
+      const paperSelect = $("#paperSelect");
       const zoomInput = $("#zoomInput");
       const positionInput = $("#positionInput");
       const horizontalInput = $("#horizontalInput");
@@ -628,6 +647,7 @@
       const statusText = $("#statusText");
       const progressBar = $("#progressBar");
       const downloadButton = $("#downloadButton");
+      const layoutDownloadButton = $("#layoutDownloadButton");
 
       let model;
       let processor;
@@ -657,11 +677,27 @@
 
       const unmixChannel = (color, backdrop, alpha) => Math.max(0, Math.min(255, (color - backdrop * (1 - alpha)) / alpha));
       const suppressSpill = (spill, otherA, otherB) => Math.min(spill, Math.max(otherA, otherB) + 6);
+      const printGrid = (sheetWidth, sheetHeight, photoWidth, photoHeight, gap = 18, margin = 12) => {
+        const columns = Math.max(1, Math.floor((sheetWidth - margin * 2 + gap) / (photoWidth + gap)));
+        const rows = Math.max(1, Math.floor((sheetHeight - margin * 2 + gap) / (photoHeight + gap)));
+        const contentWidth = columns * photoWidth + (columns - 1) * gap;
+        const contentHeight = rows * photoHeight + (rows - 1) * gap;
+        return { columns, rows, count: columns * rows, x: Math.floor((sheetWidth - contentWidth) / 2), y: Math.floor((sheetHeight - contentHeight) / 2), gap };
+      };
 
       console.assert(coverRect(100, 200, 295, 413, 1, 0, 0).width >= 295, "coverRect must cover the output");
       console.assert(coverRect(100, 200, 295, 413, 1, .5, 0).x === 147.5, "horizontal position must move up to 50%");
       console.assert(Math.round(unmixChannel(125, 200, .5)) === 50, "edge color must be separated from its old backdrop");
       console.assert(suppressSpill(120, 30, 40) === 46, "background spill must be suppressed");
+      console.assert(printGrid(1800, 1200, 295, 413).count === 10, "6-inch paper must fit ten 1-inch photos");
+
+      const updateLayoutOutput = () => {
+        const [sheetWidth, sheetHeight] = paperSelect.value.split(",").map(Number);
+        const [photoWidth, photoHeight] = sizeSelect.value.split(",").map(Number);
+        const { count } = printGrid(sheetWidth, sheetHeight, photoWidth, photoHeight);
+        $("#layoutOutput").textContent = `${count} 张 · ${sheetWidth} × ${sheetHeight} px`;
+        layoutDownloadButton.textContent = `下载排版照 · ${count} 张`;
+      };
 
       const render = () => {
         const [width, height] = sizeSelect.value.split(",").map(Number);
@@ -689,7 +725,39 @@
 
         $("#sizeOutput").textContent = `${width} × ${height} px`;
         $("#measurement").textContent = `${width} × ${height} PX · 300 DPI`;
+        updateLayoutOutput();
       };
+
+      const createPrintSheet = () => {
+        const [sheetWidth, sheetHeight] = paperSelect.value.split(",").map(Number);
+        const layout = printGrid(sheetWidth, sheetHeight, preview.width, preview.height);
+        const sheet = document.createElement("canvas");
+        sheet.width = sheetWidth;
+        sheet.height = sheetHeight;
+        const sheetContext = sheet.getContext("2d");
+        sheetContext.fillStyle = "#fff";
+        sheetContext.fillRect(0, 0, sheetWidth, sheetHeight);
+        sheetContext.strokeStyle = "#d7d7d7";
+        sheetContext.lineWidth = 1;
+        for (let row = 0; row < layout.rows; row++) {
+          for (let column = 0; column < layout.columns; column++) {
+            const x = layout.x + column * (preview.width + layout.gap);
+            const y = layout.y + row * (preview.height + layout.gap);
+            sheetContext.drawImage(preview, x, y);
+            sheetContext.strokeRect(x + .5, y + .5, preview.width - 1, preview.height - 1);
+          }
+        }
+        return sheet;
+      };
+
+      const downloadCanvas = (canvas, filename) => canvas.toBlob((blob) => {
+        if (!blob) return;
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      }, "image/jpeg", .96);
 
       const loadBrowserImage = (url) => new Promise((resolve, reject) => {
         const image = new Image();
@@ -733,6 +801,7 @@
 
         processing = true;
         downloadButton.disabled = true;
+        layoutDownloadButton.disabled = true;
         cutoutCanvas = undefined;
         if (sourceUrl) URL.revokeObjectURL(sourceUrl);
         sourceUrl = URL.createObjectURL(file);
@@ -813,6 +882,7 @@
 
           render();
           downloadButton.disabled = false;
+          layoutDownloadButton.disabled = false;
           setStatus("处理完成 · 可调整底色与构图", "", 100);
         } catch (error) {
           console.error(error);
@@ -850,6 +920,7 @@
       });
 
       sizeSelect.addEventListener("change", render);
+      paperSelect.addEventListener("change", updateLayoutOutput);
       zoomInput.addEventListener("input", () => { $("#zoomOutput").textContent = `${zoomInput.value}%`; render(); });
       positionInput.addEventListener("input", () => {
         const value = Number(positionInput.value);
@@ -867,15 +938,15 @@
         render();
       }));
 
-      downloadButton.addEventListener("click", () => {
-        preview.toBlob((blob) => {
-          const link = document.createElement("a");
-          link.href = URL.createObjectURL(blob);
-          link.download = `证件照-${sizeSelect.options[sizeSelect.selectedIndex].text.split(" · ")[0]}.jpg`;
-          link.click();
-          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-        }, "image/jpeg", .96);
-      });
+      downloadButton.addEventListener("click", () => downloadCanvas(
+        preview,
+        `证件照-${sizeSelect.options[sizeSelect.selectedIndex].text.split(" · ")[0]}.jpg`,
+      ));
+
+      layoutDownloadButton.addEventListener("click", () => downloadCanvas(
+        createPrintSheet(),
+        `排版照-${paperSelect.options[paperSelect.selectedIndex].text.split(" · ")[0]}-${sizeSelect.options[sizeSelect.selectedIndex].text.split(" · ")[0]}.jpg`,
+      ));
 
       $("#resetButton").addEventListener("click", () => {
         if (sourceUrl) URL.revokeObjectURL(sourceUrl);
@@ -893,6 +964,7 @@
         preview.style.display = "none";
         $("#emptyState").hidden = false;
         downloadButton.disabled = true;
+        layoutDownloadButton.disabled = true;
         setStatus("等待上传照片");
       });
 
